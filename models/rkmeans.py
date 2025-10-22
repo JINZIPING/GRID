@@ -112,9 +112,9 @@ class RKMeans(nn.Module):
         """Get all codebooks from all quantization layers."""
         return self.rq.get_codebook()
 
-    def update_centroids(self, assignments, embeddings):
-        """Update centroids for all quantization layers."""
-        self.rq.update_centroids(assignments, embeddings)
+    def reset_cluster_counts(self):
+        """Reset cluster counts for all quantization layers."""
+        self.rq.reset_cluster_counts()
 
     def get_model_info(self):
         """Get model information for debugging."""

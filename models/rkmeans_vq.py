@@ -86,6 +86,13 @@ class RKMeansVectorQuantizer(nn.Module):
             distances = torch.cdist(data, centroids[:i], p=2)
             min_distances = distances.min(dim=1)[0]
             
+            # Handle edge case: all points are already centroids
+            if min_distances.sum() == 0:
+                # All points are already centroids, assign remaining centroids randomly
+                remaining_indices = torch.randint(0, n_samples, (n_clusters - i,), device=device)
+                centroids[i:] = data[remaining_indices]
+                break
+            
             # Compute probabilities (squared distances)
             probabilities = min_distances ** 2
             probabilities = probabilities / probabilities.sum()
@@ -107,6 +114,7 @@ class RKMeansVectorQuantizer(nn.Module):
     def forward(self, x, use_sk=True):
         """
         Forward pass of the K-means quantizer.
+        Implements MiniBatchKMeans algorithm (Sculley 2010).
         
         Args:
             x: Input tensor of shape (batch_size, e_dim)
@@ -133,6 +141,10 @@ class RKMeansVectorQuantizer(nn.Module):
         # Assign to closest centroids
         indices = torch.argmin(distances, dim=-1)
         
+        # MiniBatchKMeans update logic
+        if self.training:
+            self._update_centroids_minibatch(latent, indices)
+        
         # Get quantized vectors
         x_q = self.centroids[indices].view(x.shape)
         
@@ -149,22 +161,42 @@ class RKMeansVectorQuantizer(nn.Module):
         
         return x_q, loss, indices
 
-    def update_centroids(self, assignments, embeddings):
-        """Update centroids based on assignments and embeddings."""
-        if not self.training:
-            return
-            
+    def _update_centroids_minibatch(self, batch, assignments):
+        """
+        Update centroids using MiniBatchKMeans algorithm (Sculley 2010).
+        This implements the incremental update formula from the original paper.
+        """
         # Convert assignments to one-hot
         assignments_one_hot = F.one_hot(assignments, self.n_e).float()
         
-        # Update cluster counts
-        batch_cluster_counts = assignments_one_hot.sum(dim=0)
-        self.cluster_counts += batch_cluster_counts.to(self.cluster_counts.device)
+        # Count points in each cluster for this batch
+        batch_cluster_counts = torch.sum(assignments_one_hot, dim=0)
         
-        # Update centroids
-        batch_cluster_sums = torch.mm(assignments_one_hot.t(), embeddings)
+        # Ensure cluster_counts is on the same device as batch_cluster_counts
+        if self.cluster_counts.device != batch_cluster_counts.device:
+            self.cluster_counts = self.cluster_counts.to(batch_cluster_counts.device)
         
-        # Only update centroids that have assignments
-        mask = batch_cluster_counts > 0
+        # Update global cluster counts
+        self.cluster_counts += batch_cluster_counts
+        
+        # Accumulate points for each cluster
+        batch_cluster_sums = torch.mm(assignments_one_hot.t(), batch)
+        
+        # MiniBatchKMeans update formula
+        mask = batch_cluster_counts != 0
         if mask.any():
-            self.centroids.data[mask] = batch_cluster_sums[mask] / batch_cluster_counts[mask].unsqueeze(1)
+            # Calculate target centroids for this batch
+            mask_target = batch_cluster_sums[mask] / batch_cluster_counts[mask].unsqueeze(1)
+            
+            # Calculate weights based on historical counts
+            centroid_weights = batch_cluster_counts[mask] / self.cluster_counts[mask]
+            
+            # Apply MiniBatchKMeans incremental update
+            # This is equivalent to SGD with learning rate 0.5
+            self.centroids.data[mask] = self.centroids.data[mask] - (
+                (self.centroids.data[mask] - mask_target) * centroid_weights.unsqueeze(1)
+            )
+
+    def reset_cluster_counts(self):
+        """Reset cluster counts (useful for new training runs)."""
+        self.cluster_counts = torch.zeros(self.n_e, device=self.centroids.device)

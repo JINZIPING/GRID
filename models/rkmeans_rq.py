@@ -101,12 +101,7 @@ class RKMeansResidualQuantizer(nn.Module):
             _, _, all_indices = self.forward(x, use_sk=use_sk)
         return all_indices
 
-    def update_centroids(self, assignments, embeddings):
-        """Update centroids for all quantization layers."""
-        for i, quantizer in enumerate(self.vq_layers):
-            # Get assignments and embeddings for this layer
-            layer_assignments = assignments[:, i]
-            layer_embeddings = embeddings
-            
-            # Update centroids for this layer
-            quantizer.update_centroids(layer_assignments, layer_embeddings)
+    def reset_cluster_counts(self):
+        """Reset cluster counts for all quantization layers."""
+        for quantizer in self.vq_layers:
+            quantizer.reset_cluster_counts()
